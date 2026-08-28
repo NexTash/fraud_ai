@@ -1,64 +1,69 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Application Details</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        body { background: linear-gradient(135deg, #f8fafc, #eef2ff); min-height: 100vh; font-family: Arial, sans-serif; }
-        .card-soft { border: none; border-radius: 18px; box-shadow: 0 12px 30px rgba(15, 23, 42, 0.10); }
-    </style>
-</head>
-<body>
+{% extends "base.html" %}
+{% block title %}{{ app[1] }}{% endblock %}
+{% block content %}
 <div class="container py-5">
-    <div class="d-flex justify-content-between align-items-center mb-4">
+    <div class="page-header d-flex justify-content-between align-items-start">
         <div>
-            <h2 class="fw-bold">{{ app[1] }}</h2>
-            <p class="text-muted mb-0">Category: {{ app[2] }}</p>
+            <h2 class="d-flex align-items-center gap-2">
+                {{ app[1] }}
+                {% if app[9] == 'Fraud' %}
+                <span class="pill pill-danger"><i class="bi bi-exclamation-triangle"></i> Fraud</span>
+                {% elif app[9] == 'Genuine' %}
+                <span class="pill pill-success"><i class="bi bi-check-circle"></i> Genuine</span>
+                {% else %}
+                <span class="pill pill-neutral">Unreviewed</span>
+                {% endif %}
+            </h2>
+            <p class="mb-0"><i class="bi bi-tag me-1"></i>{{ app[2] }}</p>
         </div>
-        <a href="/apps" class="btn btn-outline-secondary">Back to Apps</a>
+        <a href="/apps" class="btn btn-outline-primary"><i class="bi bi-arrow-left me-1"></i>Back to Apps</a>
     </div>
 
-    {% with messages = get_flashed_messages() %}
-        {% if messages %}
-            <div class="alert alert-success">{{ messages[0] }}</div>
-        {% endif %}
-    {% endwith %}
-
-    <div class="card card-soft mb-4">
+    <div class="card card-flat mb-4">
         <div class="card-body">
             <p>{{ app[7] or 'No description available.' }}</p>
-            <p><strong>Current Rating:</strong> {{ app[5] or '0.0' }}</p>
-            <p><strong>Sentiment:</strong> {{ app[4] or 'Neutral' }}</p>
+            <div class="d-flex align-items-center gap-4">
+                <span><i class="bi bi-star-fill text-warning me-1"></i><strong>{{ app[5] or '0.0' }}</strong> rating</span>
+                <span class="text-muted">Overall sentiment: {{ app[4] or 'Neutral' }}</span>
+            </div>
             {% if app[6] %}
-            <a href="{{ app[6] }}" target="_blank" class="btn btn-primary">Open App Link</a>
+            <a href="{{ app[6] }}" target="_blank" class="btn btn-primary mt-3"><i class="bi bi-box-arrow-up-right me-1"></i>Open App Link</a>
             {% endif %}
         </div>
     </div>
 
-    <div class="card card-soft">
+    <div class="card card-flat">
         <div class="card-body">
             <h5 class="fw-bold mb-3">User Reviews</h5>
-            <form method="POST">
-                <textarea name="comment" class="form-control" rows="4" placeholder="Write your feedback about this app" required></textarea>
-                <button class="btn btn-success mt-3">Submit Review</button>
+            <form method="POST" class="mb-4">
+                <textarea name="comment" class="form-control" rows="3" placeholder="Write your feedback about this app" required></textarea>
+                <button class="btn btn-primary mt-3"><i class="bi bi-send me-1"></i>Submit Review</button>
             </form>
             <hr>
             {% if comments %}
                 {% for comment in comments %}
-                <div class="border rounded p-3 mb-3">
-                    <div class="d-flex justify-content-between">
-                        <strong>{{ comment[3] or 'User' }}</strong>
-                        <span class="badge bg-info text-dark">{{ comment[1] }}</span>
+                <div class="border-bottom pb-3 mb-3">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <strong><i class="bi bi-person-circle me-1"></i>{{ comment[3] or 'User' }}</strong>
+                        {% if comment[1] == 'Negative' %}
+                            <span class="pill pill-danger">Negative</span>
+                        {% elif comment[1] == 'Positive' %}
+                            <span class="pill pill-success">Positive</span>
+                        {% else %}
+                            <span class="pill pill-neutral">Neutral</span>
+                        {% endif %}
                     </div>
-                    <p class="mb-0 mt-2">{{ comment[0] }}</p>
+                    <p class="mb-1 mt-2">{{ comment[0] }}</p>
                     <small class="text-muted">{{ comment[2] }}</small>
                 </div>
                 {% endfor %}
             {% else %}
-                <p class="text-muted mb-0">No reviews yet. Be the first to review this app.</p>
+            <div class="empty-state">
+                <i class="bi bi-chat-square"></i>
+                No reviews yet. Be the first to review this app.
+            </div>
             {% endif %}
         </div>
     </div>
 </div>
-</body>
-</html>
+{% endblock %}

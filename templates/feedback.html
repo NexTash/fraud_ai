@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Write Feedback{% endblock %}
+{% block content %}
+<div class="container py-5">
+    <div class="row justify-content-center">
+        <div class="col-lg-7">
+            <div class="page-header">
+                <h2>Write Feedback</h2>
+                <p class="mb-0">Share feedback about the system itself (not a specific app) — it goes straight to the admin.</p>
+            </div>
+            <div class="card card-flat">
+                <div class="card-body p-4">
+                    <form method="POST">
+                        <div class="mb-4">
+                            <label class="form-label">Your Feedback</label>
+                            <textarea name="message" class="form-control" rows="6" placeholder="Tell us what you think..." required></textarea>
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-primary"><i class="bi bi-send me-1"></i>Submit Feedback</button>
+                            <a href="/dashboard" class="btn btn-outline-secondary">Cancel</a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

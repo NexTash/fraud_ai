@@ -1,16 +1,15 @@
+from functools import wraps
+
 from flask import Flask, render_template, request, redirect, session, flash, abort
 import sqlite3
-import os
-import time
-from werkzeug.utils import secure_filename
-from model import analyze_sentiment
-from image_check import check_app
+from werkzeug.security import generate_password_hash, check_password_hash
+from model import analyze_sentiment, sentiment_score, score_to_rating
 
 app = Flask(__name__)
 app.secret_key = "secret123"
 
-UPLOAD_FOLDER = "static/uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+ADMIN_USERNAME = "admin"
+ADMIN_DEFAULT_PASSWORD = "admin123"
 
 
 def db():
@@ -59,16 +58,91 @@ def ensure_schema():
     )
     """)
 
-    columns = [row[1] for row in cursor.execute("PRAGMA table_info(apps)")]
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS system_feedback(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        message TEXT,
+        ip_address TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    app_columns = [row[1] for row in cursor.execute("PRAGMA table_info(apps)")]
     for column_name in ["link", "description", "image_url"]:
-        if column_name not in columns:
+        if column_name not in app_columns:
             cursor.execute(f"ALTER TABLE apps ADD COLUMN {column_name} TEXT")
+    if "status" not in app_columns:
+        cursor.execute("ALTER TABLE apps ADD COLUMN status TEXT DEFAULT 'Unreviewed'")
+
+    review_columns = [row[1] for row in cursor.execute("PRAGMA table_info(app_reviews)")]
+    if "ip_address" not in review_columns:
+        cursor.execute("ALTER TABLE app_reviews ADD COLUMN ip_address TEXT")
+
+    user_columns = [row[1] for row in cursor.execute("PRAGMA table_info(users)")]
+    if "role" not in user_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'")
+
+    admin_row = cursor.execute(
+        "SELECT id FROM users WHERE role='admin'"
+    ).fetchone()
+    if not admin_row:
+        cursor.execute(
+            "INSERT INTO users(username, password, role) VALUES (?,?,?)",
+            (ADMIN_USERNAME, generate_password_hash(ADMIN_DEFAULT_PASSWORD), "admin"),
+        )
 
     conn.commit()
     conn.close()
 
 
 ensure_schema()
+
+
+def require_login(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get('user'):
+            flash("Please log in to continue.")
+            return redirect('/login')
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def require_admin(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get('user'):
+            flash("Please log in to continue.")
+            return redirect('/login')
+        if session.get('role') != 'admin':
+            flash("Admin access only.")
+            return redirect('/dashboard')
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def recalculate_app_rating(conn, app_id):
+    rating_rows = conn.execute("SELECT sentiment FROM app_reviews WHERE app_id=?", (app_id,)).fetchall()
+    score_map = {"Positive": 5, "Neutral": 3, "Negative": 1}
+
+    if not rating_rows:
+        conn.execute("UPDATE apps SET sentiment=?, rating=? WHERE id=?", ("Neutral", 0.0, app_id))
+        return
+
+    average_score = sum(score_map.get(row[0], 3) for row in rating_rows) / len(rating_rows)
+
+    if average_score >= 3.67:
+        aggregate_sentiment = "Positive"
+    elif average_score <= 2.33:
+        aggregate_sentiment = "Negative"
+    else:
+        aggregate_sentiment = "Neutral"
+
+    conn.execute(
+        "UPDATE apps SET sentiment=?, rating=? WHERE id=?",
+        (aggregate_sentiment, round(average_score, 1), app_id)
+    )
 
 
 # ---------------- HOME ----------------
@@ -85,7 +159,10 @@ def register():
         p = request.form['password']
 
         conn = db()
-        conn.execute("INSERT INTO users(username,password) VALUES (?,?)", (u, p))
+        conn.execute(
+            "INSERT INTO users(username,password,role) VALUES (?,?,?)",
+            (u, generate_password_hash(p), "user")
+        )
         conn.commit()
         conn.close()
 
@@ -103,14 +180,27 @@ def login():
         p = request.form['password']
 
         conn = db()
-        user = conn.execute(
-            "SELECT * FROM users WHERE username=? AND password=?", (u, p)
-        ).fetchone()
+        user = conn.execute("SELECT * FROM users WHERE username=?", (u,)).fetchone()
+
+        authenticated = False
+        if user:
+            stored_password = user[2]
+            if check_password_hash(stored_password, p):
+                authenticated = True
+            elif stored_password == p:
+                authenticated = True
+                conn.execute(
+                    "UPDATE users SET password=? WHERE id=?",
+                    (generate_password_hash(p), user[0])
+                )
+                conn.commit()
+
         conn.close()
 
-        if user:
+        if authenticated:
             session['user'] = u
             session['user_id'] = user[0]
+            session['role'] = user[3]
             flash(f"Welcome back, {u}!")
             return redirect('/apps')
 
@@ -119,26 +209,31 @@ def login():
     return render_template("login.html")
 
 
+# ---------------- LOGOUT ----------------
+@app.route('/logout')
+def logout():
+    session.clear()
+    flash("You have been logged out.")
+    return redirect('/')
+
+
 # ---------------- VIEW APPS ----------------
 @app.route('/apps')
+@require_login
 def apps():
-    if not session.get('user'):
-        flash("Please log in to view applications.")
-        return redirect('/login')
-
     conn = db()
     app_rows = conn.execute("SELECT * FROM apps ORDER BY id DESC").fetchall()
+    categories = [
+        row[0] for row in conn.execute("SELECT DISTINCT category FROM apps WHERE category IS NOT NULL AND category != '' ORDER BY category")
+    ]
     conn.close()
-    return render_template("apps.html", apps=app_rows, username=session.get('user'))
+    return render_template("apps.html", apps=app_rows, categories=categories)
 
 
 # ---------------- APP DETAILS + REVIEW ----------------
 @app.route('/apps/<int:app_id>', methods=['GET', 'POST'])
+@require_login
 def app_detail(app_id):
-    if not session.get('user'):
-        flash("Please log in to view application details.")
-        return redirect('/login')
-
     conn = db()
     app_row = conn.execute("SELECT * FROM apps WHERE id=?", (app_id,)).fetchone()
     if not app_row:
@@ -163,31 +258,25 @@ def app_detail(app_id):
         sentiment = analyze_sentiment(comment)
         conn = db()
         conn.execute(
-            "INSERT INTO app_reviews(app_id, user_id, comment, sentiment) VALUES (?,?,?,?)",
-            (app_id, session.get('user_id'), comment, sentiment)
+            "INSERT INTO app_reviews(app_id, user_id, comment, sentiment, ip_address) VALUES (?,?,?,?,?)",
+            (app_id, session.get('user_id'), comment, sentiment, request.remote_addr)
         )
         conn.commit()
 
-        rating_rows = conn.execute("SELECT sentiment FROM app_reviews WHERE app_id=?", (app_id,)).fetchall()
-        score_map = {"Positive": 5, "Neutral": 3, "Negative": 1}
-        average_score = sum(score_map.get(row[0], 3) for row in rating_rows) / len(rating_rows)
-        conn.execute("UPDATE apps SET sentiment=?, rating=? WHERE id=?", (sentiment, round(average_score, 1), app_id))
+        recalculate_app_rating(conn, app_id)
         conn.commit()
         conn.close()
 
         flash("Review submitted successfully.")
         return redirect(f'/apps/{app_id}')
 
-    return render_template("app_detail.html", app=app_row, comments=comments, username=session.get('user'))
+    return render_template("app_detail.html", app=app_row, comments=comments)
 
 
 # ---------------- ADD REVIEW ----------------
 @app.route('/add_review', methods=['GET', 'POST'])
+@require_login
 def add_review():
-    if not session.get('user'):
-        flash("Please log in before posting a review.")
-        return redirect('/login')
-
     conn = db()
     apps = conn.execute("SELECT id, name FROM apps ORDER BY id DESC").fetchall()
     conn.close()
@@ -199,15 +288,12 @@ def add_review():
             sentiment = analyze_sentiment(text)
             conn = db()
             conn.execute(
-                "INSERT INTO app_reviews(app_id, user_id, comment, sentiment) VALUES (?,?,?,?)",
-                (app_id, session.get('user_id'), text, sentiment)
+                "INSERT INTO app_reviews(app_id, user_id, comment, sentiment, ip_address) VALUES (?,?,?,?,?)",
+                (app_id, session.get('user_id'), text, sentiment, request.remote_addr)
             )
             conn.commit()
 
-            rating_rows = conn.execute("SELECT sentiment FROM app_reviews WHERE app_id=?", (app_id,)).fetchall()
-            score_map = {"Positive": 5, "Neutral": 3, "Negative": 1}
-            average_score = sum(score_map.get(row[0], 3) for row in rating_rows) / len(rating_rows)
-            conn.execute("UPDATE apps SET sentiment=?, rating=? WHERE id=?", (sentiment, round(average_score, 1), app_id))
+            recalculate_app_rating(conn, app_id)
             conn.commit()
             conn.close()
 
@@ -216,35 +302,13 @@ def add_review():
 
         flash("Please complete all fields before submitting.")
 
-    return render_template("add_review.html", apps=apps, username=session.get('user'))
-
-
-# ---------------- IMAGE UPLOAD ----------------
-@app.route('/upload_image', methods=['GET', 'POST'])
-def upload_image():
-    result = ""
-
-    if request.method == 'POST':
-        file = request.files['image']
-
-        if file and file.filename:
-            filename = str(int(time.time())) + "_" + secure_filename(file.filename)
-            path = os.path.join(UPLOAD_FOLDER, filename)
-            file.save(path)
-            result = check_app(path)
-        else:
-            result = "Please choose an image first."
-
-    return render_template("upload.html", result=result)
+    return render_template("add_review.html", apps=apps)
 
 
 # ---------------- USER DASHBOARD ----------------
 @app.route('/dashboard')
+@require_login
 def dashboard():
-    if not session.get('user'):
-        flash("Please log in first.")
-        return redirect('/login')
-
     conn = db()
     user_reviews = conn.execute(
         "SELECT ar.comment, ar.sentiment, a.name FROM app_reviews ar LEFT JOIN apps a ON ar.app_id = a.id WHERE ar.user_id=? ORDER BY ar.id DESC",
@@ -263,50 +327,116 @@ def dashboard():
         "dashboard.html",
         reviews=user_reviews,
         status=status,
-        negative_count=neg,
-        username=session.get('user')
+        negative_count=neg
     )
+
+
+# ---------------- SYSTEM FEEDBACK ----------------
+@app.route('/feedback', methods=['GET', 'POST'])
+@require_login
+def feedback():
+    if request.method == 'POST':
+        message = request.form.get('message', '').strip()
+        if not message:
+            flash("Please write your feedback before submitting.")
+            return redirect('/feedback')
+
+        conn = db()
+        conn.execute(
+            "INSERT INTO system_feedback(user_id, message, ip_address) VALUES (?,?,?)",
+            (session.get('user_id'), message, request.remote_addr)
+        )
+        conn.commit()
+        conn.close()
+
+        flash("Thank you, your feedback has been sent to the admin.")
+        return redirect('/dashboard')
+
+    return render_template("feedback.html")
 
 
 # ---------------- ADMIN DASHBOARD ----------------
 @app.route('/admin/dashboard')
+@require_admin
 def admin_dashboard():
     conn = db()
     conn.row_factory = sqlite3.Row
-    apps = conn.execute("SELECT * FROM apps ORDER BY id DESC").fetchall()
+    apps = conn.execute("""
+        SELECT a.*,
+            COALESCE((SELECT COUNT(*) FROM app_reviews r WHERE r.app_id = a.id), 0) AS review_count,
+            COALESCE((SELECT COUNT(*) FROM app_reviews r WHERE r.app_id = a.id AND r.sentiment = 'Negative'), 0) AS negative_count
+        FROM apps a
+        ORDER BY
+            CASE WHEN (SELECT COUNT(*) FROM app_reviews r WHERE r.app_id = a.id) = 0 THEN 0
+            ELSE CAST((SELECT COUNT(*) FROM app_reviews r WHERE r.app_id = a.id AND r.sentiment = 'Negative') AS FLOAT)
+                 / (SELECT COUNT(*) FROM app_reviews r WHERE r.app_id = a.id)
+            END DESC,
+            a.id DESC
+    """).fetchall()
     users = conn.execute("SELECT * FROM users ORDER BY id DESC").fetchall()
     feedback = conn.execute("""
-        SELECT ar.id, u.username, a.name AS app_name, ar.comment, ar.sentiment
+        SELECT ar.id, u.username, a.name AS app_name, ar.comment, ar.sentiment, ar.ip_address, ar.created_at,
+            (SELECT COUNT(*) FROM app_reviews dup WHERE dup.app_id = ar.app_id AND dup.comment = ar.comment) AS dup_count
         FROM app_reviews ar
         LEFT JOIN users u ON ar.user_id = u.id
         LEFT JOIN apps a ON ar.app_id = a.id
         ORDER BY ar.id DESC
     """).fetchall()
+    system_feedback = conn.execute("""
+        SELECT sf.id, u.username, sf.message, sf.ip_address, sf.created_at
+        FROM system_feedback sf
+        LEFT JOIN users u ON sf.user_id = u.id
+        ORDER BY sf.id DESC
+    """).fetchall()
     conn.close()
 
-    return render_template("admin_dashboard.html", apps=apps, users=users, feedback=feedback)
+    return render_template(
+        "admin_dashboard.html",
+        apps=apps,
+        users=users,
+        feedback=feedback,
+        system_feedback=system_feedback
+    )
 
 
-# ---------------- AUTO SENTIMENT + RATING ----------------
-def get_sentiment_and_rating(text):
-    text = text.lower()
+# ---------------- ADMIN: FRAUD / GENUINE VERDICT ----------------
+@app.route('/admin/apps/<int:app_id>/verdict', methods=['POST'])
+@require_admin
+def set_app_verdict(app_id):
+    verdict = request.form.get('status')
+    if verdict not in ("Genuine", "Fraud"):
+        flash("Invalid verdict.")
+        return redirect('/admin/dashboard')
 
-    positive_words = ["good", "great", "best", "nice", "excellent", "love"]
-    negative_words = ["bad", "worst", "fake", "scam", "poor", "hate"]
+    conn = db()
+    conn.execute("UPDATE apps SET status=? WHERE id=?", (verdict, app_id))
+    conn.commit()
+    conn.close()
 
-    pos = sum(word in text for word in positive_words)
-    neg = sum(word in text for word in negative_words)
+    flash(f"App marked as {verdict}.")
+    return redirect('/admin/dashboard')
 
-    if pos > neg:
-        return "Positive", 4.5
-    elif neg > pos:
-        return "Negative", 1.5
-    else:
-        return "Neutral", 3.0
+
+# ---------------- ADMIN: DELETE REVIEW ----------------
+@app.route('/admin/reviews/<int:review_id>/delete', methods=['POST'])
+@require_admin
+def delete_review(review_id):
+    conn = db()
+    review = conn.execute("SELECT app_id FROM app_reviews WHERE id=?", (review_id,)).fetchone()
+    if review:
+        app_id = review[0]
+        conn.execute("DELETE FROM app_reviews WHERE id=?", (review_id,))
+        recalculate_app_rating(conn, app_id)
+        conn.commit()
+        flash("Review removed.")
+    conn.close()
+
+    return redirect('/admin/dashboard')
 
 
 # ---------------- ADD APP ----------------
 @app.route('/admin/add_app', methods=['GET', 'POST'])
+@require_admin
 def add_app():
     if request.method == 'POST':
         name = request.form['name']
@@ -316,7 +446,8 @@ def add_app():
         description = request.form.get('description', '')
         image_url = request.form.get('image_url', '')
 
-        sentiment, rating = get_sentiment_and_rating(review)
+        sentiment = analyze_sentiment(review)
+        rating = score_to_rating(sentiment_score(review))
 
         conn = db()
         conn.execute("""
