@@ -56,12 +56,12 @@
                     <tbody>
                         {% for review in reviews %}
                         <tr>
-                            <td class="fw-semibold">{{ review[2] or 'Unknown app' }}</td>
-                            <td>{{ review[0] }}</td>
+                            <td class="fw-semibold">{{ review['app_name'] or 'Unknown app' }}</td>
+                            <td>{{ review['comment'] }}</td>
                             <td>
-                                {% if review[1] == 'Negative' %}
+                                {% if review['sentiment'] == 'Negative' %}
                                     <span class="pill pill-danger">Negative</span>
-                                {% elif review[1] == 'Positive' %}
+                                {% elif review['sentiment'] == 'Positive' %}
                                     <span class="pill pill-success">Positive</span>
                                 {% else %}
                                     <span class="pill pill-neutral">Neutral</span>

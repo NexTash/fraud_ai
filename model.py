@@ -3,6 +3,10 @@ from nltk import pos_tag, word_tokenize
 from nltk.corpus import sentiwordnet as swn
 from nltk.corpus import wordnet as wn
 
+# Below this magnitude a review reads as sentiment-neutral rather than positive/negative.
+# Kept low because SentiWordNet scores get diluted by neutral filler words in short reviews.
+SENTIMENT_THRESHOLD = 0.02
+
 _REQUIRED_NLTK_DATA = [
     ("corpora/sentiwordnet", "sentiwordnet"),
     ("corpora/wordnet", "wordnet"),
@@ -66,9 +70,9 @@ def sentiment_score(text):
 def analyze_sentiment(text):
     score = sentiment_score(text)
 
-    if score > 0.02:
+    if score > SENTIMENT_THRESHOLD:
         return "Positive"
-    elif score < -0.02:
+    elif score < -SENTIMENT_THRESHOLD:
         return "Negative"
     else:
         return "Neutral"

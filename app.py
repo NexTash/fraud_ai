@@ -13,26 +13,17 @@ ADMIN_DEFAULT_PASSWORD = "admin123"
 
 
 def db():
-    return sqlite3.connect("database.db")
+    conn = sqlite3.connect("database.db")
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
-def ensure_schema():
-    conn = db()
-    cursor = conn.cursor()
-
+def _create_tables(cursor):
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS users(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT,
         password TEXT
-    )
-    """)
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS reviews(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        text TEXT,
-        sentiment TEXT
     )
     """)
 
@@ -68,32 +59,43 @@ def ensure_schema():
     )
     """)
 
-    app_columns = [row[1] for row in cursor.execute("PRAGMA table_info(apps)")]
-    for column_name in ["link", "description", "image_url"]:
-        if column_name not in app_columns:
-            cursor.execute(f"ALTER TABLE apps ADD COLUMN {column_name} TEXT")
-    if "status" not in app_columns:
-        cursor.execute("ALTER TABLE apps ADD COLUMN status TEXT DEFAULT 'Unreviewed'")
 
-    review_columns = [row[1] for row in cursor.execute("PRAGMA table_info(app_reviews)")]
-    if "ip_address" not in review_columns:
-        cursor.execute("ALTER TABLE app_reviews ADD COLUMN ip_address TEXT")
+def _add_column_if_missing(cursor, table, column, ddl):
+    existing_columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({table})")]
+    if column not in existing_columns:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
-    user_columns = [row[1] for row in cursor.execute("PRAGMA table_info(users)")]
-    if "role" not in user_columns:
-        cursor.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'")
-    if "created_at" not in user_columns:
-        cursor.execute("ALTER TABLE users ADD COLUMN created_at TEXT")
-        cursor.execute("UPDATE users SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL")
 
-    admin_row = cursor.execute(
-        "SELECT id FROM users WHERE role='admin'"
-    ).fetchone()
-    if not admin_row:
+def _migrate_schema(cursor):
+    """Brings tables created by an older version of this app up to the current schema."""
+    _add_column_if_missing(cursor, "apps", "link", "TEXT")
+    _add_column_if_missing(cursor, "apps", "description", "TEXT")
+    _add_column_if_missing(cursor, "apps", "image_url", "TEXT")
+    _add_column_if_missing(cursor, "apps", "status", "TEXT DEFAULT 'Unreviewed'")
+
+    _add_column_if_missing(cursor, "app_reviews", "ip_address", "TEXT")
+
+    _add_column_if_missing(cursor, "users", "role", "TEXT DEFAULT 'user'")
+    _add_column_if_missing(cursor, "users", "created_at", "TEXT")
+    cursor.execute("UPDATE users SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL")
+
+
+def _seed_default_admin(cursor):
+    admin_exists = cursor.execute("SELECT id FROM users WHERE role='admin'").fetchone()
+    if not admin_exists:
         cursor.execute(
             "INSERT INTO users(username, password, role, created_at) VALUES (?,?,?,CURRENT_TIMESTAMP)",
             (ADMIN_USERNAME, generate_password_hash(ADMIN_DEFAULT_PASSWORD), "admin"),
         )
+
+
+def ensure_schema():
+    conn = db()
+    cursor = conn.cursor()
+
+    _create_tables(cursor)
+    _migrate_schema(cursor)
+    _seed_default_admin(cursor)
 
     conn.commit()
     conn.close()
@@ -158,13 +160,13 @@ def home():
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
-        u = request.form['username']
-        p = request.form['password']
+        username = request.form['username']
+        password = request.form['password']
 
         conn = db()
         conn.execute(
             "INSERT INTO users(username,password,role,created_at) VALUES (?,?,?,CURRENT_TIMESTAMP)",
-            (u, generate_password_hash(p), "user")
+            (username, generate_password_hash(password), "user")
         )
         conn.commit()
         conn.close()
@@ -179,32 +181,35 @@ def register():
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        u = request.form['username']
-        p = request.form['password']
+        username = request.form['username']
+        password = request.form['password']
 
         conn = db()
-        user = conn.execute("SELECT * FROM users WHERE username=?", (u,)).fetchone()
+        user = conn.execute(
+            "SELECT id, username, password, role FROM users WHERE username=?", (username,)
+        ).fetchone()
 
         authenticated = False
         if user:
-            stored_password = user[2]
-            if check_password_hash(stored_password, p):
+            if check_password_hash(user['password'], password):
                 authenticated = True
-            elif stored_password == p:
+            elif user['password'] == password:
+                # Legacy plaintext password from before hashing was added — accept it once,
+                # then upgrade it to a hash so this branch never runs for this account again.
                 authenticated = True
                 conn.execute(
                     "UPDATE users SET password=? WHERE id=?",
-                    (generate_password_hash(p), user[0])
+                    (generate_password_hash(password), user['id'])
                 )
                 conn.commit()
 
         conn.close()
 
         if authenticated:
-            session['user'] = u
-            session['user_id'] = user[0]
-            session['role'] = user[3]
-            flash(f"Welcome back, {u}!")
+            session['user'] = user['username']
+            session['user_id'] = user['id']
+            session['role'] = user['role']
+            flash(f"Welcome back, {user['username']}!")
             return redirect('/apps')
 
         flash("Invalid username or password.")
@@ -313,14 +318,17 @@ def add_review():
 @require_login
 def dashboard():
     conn = db()
-    user_reviews = conn.execute(
-        "SELECT ar.comment, ar.sentiment, a.name FROM app_reviews ar LEFT JOIN apps a ON ar.app_id = a.id WHERE ar.user_id=? ORDER BY ar.id DESC",
-        (session.get('user_id'),)
-    ).fetchall()
+    user_reviews = conn.execute("""
+        SELECT ar.comment, ar.sentiment, a.name AS app_name
+        FROM app_reviews ar
+        LEFT JOIN apps a ON ar.app_id = a.id
+        WHERE ar.user_id = ?
+        ORDER BY ar.id DESC
+    """, (session.get('user_id'),)).fetchall()
     conn.close()
 
     total = len(user_reviews)
-    neg = sum(1 for r in user_reviews if r[1] == "Negative")
+    neg = sum(1 for review in user_reviews if review['sentiment'] == "Negative")
 
     status = "No Data"
     if total > 0:
@@ -363,7 +371,6 @@ def feedback():
 @require_admin
 def admin_dashboard():
     conn = db()
-    conn.row_factory = sqlite3.Row
     apps = conn.execute("""
         SELECT a.*,
             COALESCE((SELECT COUNT(*) FROM app_reviews r WHERE r.app_id = a.id), 0) AS review_count,
@@ -377,7 +384,7 @@ def admin_dashboard():
             a.id DESC
     """).fetchall()
     users = conn.execute("""
-        SELECT u.*,
+        SELECT u.id, u.username, u.role, u.created_at,
             COALESCE((SELECT COUNT(*) FROM app_reviews r WHERE r.user_id = u.id), 0) AS review_count,
             COALESCE((SELECT COUNT(*) FROM system_feedback f WHERE f.user_id = u.id), 0) AS feedback_count
         FROM users u
@@ -433,7 +440,7 @@ def delete_review(review_id):
     conn = db()
     review = conn.execute("SELECT app_id FROM app_reviews WHERE id=?", (review_id,)).fetchone()
     if review:
-        app_id = review[0]
+        app_id = review['app_id']
         conn.execute("DELETE FROM app_reviews WHERE id=?", (review_id,))
         recalculate_app_rating(conn, app_id)
         conn.commit()

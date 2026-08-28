@@ -145,21 +145,21 @@
             <div class="card card-flat mb-3">
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-center">
-                        <strong><i class="bi bi-person-circle me-1"></i>{{ item[1] }}</strong>
-                        {% if item[4] == 'Negative' %}
+                        <strong><i class="bi bi-person-circle me-1"></i>{{ item['username'] }}</strong>
+                        {% if item['sentiment'] == 'Negative' %}
                             <span class="pill pill-danger">Negative</span>
-                        {% elif item[4] == 'Positive' %}
+                        {% elif item['sentiment'] == 'Positive' %}
                             <span class="pill pill-success">Positive</span>
                         {% else %}
                             <span class="pill pill-neutral">Neutral</span>
                         {% endif %}
                     </div>
-                    <p class="mb-1 mt-2">{{ item[3] }}</p>
-                    <small class="text-muted">App: {{ item[2] }} &middot; IP: {{ item[5] or 'unknown' }} &middot; {{ item[6] }}</small>
-                    {% if item[7] and item[7] > 1 %}
-                    <div class="mt-2"><span class="pill pill-warning"><i class="bi bi-exclamation-diamond"></i> Possible duplicate ({{ item[7] }}x)</span></div>
+                    <p class="mb-1 mt-2">{{ item['comment'] }}</p>
+                    <small class="text-muted">App: {{ item['app_name'] }} &middot; IP: {{ item['ip_address'] or 'unknown' }} &middot; {{ item['created_at'] }}</small>
+                    {% if item['dup_count'] and item['dup_count'] > 1 %}
+                    <div class="mt-2"><span class="pill pill-warning"><i class="bi bi-exclamation-diamond"></i> Possible duplicate ({{ item['dup_count'] }}x)</span></div>
                     {% endif %}
-                    <form method="POST" action="/admin/reviews/{{ item[0] }}/delete" class="mt-2">
+                    <form method="POST" action="/admin/reviews/{{ item['id'] }}/delete" class="mt-2">
                         <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete</button>
                     </form>
                 </div>
@@ -179,9 +179,9 @@
             {% for item in system_feedback %}
             <div class="card card-flat mb-3">
                 <div class="card-body">
-                    <strong><i class="bi bi-person-circle me-1"></i>{{ item[1] or 'Unknown user' }}</strong>
-                    <p class="mb-1 mt-2">{{ item[2] }}</p>
-                    <small class="text-muted">IP: {{ item[3] or 'unknown' }} &middot; {{ item[4] }}</small>
+                    <strong><i class="bi bi-person-circle me-1"></i>{{ item['username'] or 'Unknown user' }}</strong>
+                    <p class="mb-1 mt-2">{{ item['message'] }}</p>
+                    <small class="text-muted">IP: {{ item['ip_address'] or 'unknown' }} &middot; {{ item['created_at'] }}</small>
                 </div>
             </div>
             {% endfor %}
