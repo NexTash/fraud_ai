@@ -82,13 +82,16 @@ def ensure_schema():
     user_columns = [row[1] for row in cursor.execute("PRAGMA table_info(users)")]
     if "role" not in user_columns:
         cursor.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'")
+    if "created_at" not in user_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN created_at TEXT")
+        cursor.execute("UPDATE users SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL")
 
     admin_row = cursor.execute(
         "SELECT id FROM users WHERE role='admin'"
     ).fetchone()
     if not admin_row:
         cursor.execute(
-            "INSERT INTO users(username, password, role) VALUES (?,?,?)",
+            "INSERT INTO users(username, password, role, created_at) VALUES (?,?,?,CURRENT_TIMESTAMP)",
             (ADMIN_USERNAME, generate_password_hash(ADMIN_DEFAULT_PASSWORD), "admin"),
         )
 
@@ -160,7 +163,7 @@ def register():
 
         conn = db()
         conn.execute(
-            "INSERT INTO users(username,password,role) VALUES (?,?,?)",
+            "INSERT INTO users(username,password,role,created_at) VALUES (?,?,?,CURRENT_TIMESTAMP)",
             (u, generate_password_hash(p), "user")
         )
         conn.commit()
@@ -373,7 +376,13 @@ def admin_dashboard():
             END DESC,
             a.id DESC
     """).fetchall()
-    users = conn.execute("SELECT * FROM users ORDER BY id DESC").fetchall()
+    users = conn.execute("""
+        SELECT u.*,
+            COALESCE((SELECT COUNT(*) FROM app_reviews r WHERE r.user_id = u.id), 0) AS review_count,
+            COALESCE((SELECT COUNT(*) FROM system_feedback f WHERE f.user_id = u.id), 0) AS feedback_count
+        FROM users u
+        ORDER BY u.id DESC
+    """).fetchall()
     feedback = conn.execute("""
         SELECT ar.id, u.username, a.name AS app_name, ar.comment, ar.sentiment, ar.ip_address, ar.created_at,
             (SELECT COUNT(*) FROM app_reviews dup WHERE dup.app_id = ar.app_id AND dup.comment = ar.comment) AS dup_count

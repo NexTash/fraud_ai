@@ -100,13 +100,18 @@
                         <table class="table table-clean align-middle">
                             <thead>
                                 <tr>
+                                    <th>ID</th>
                                     <th>Username</th>
                                     <th>Role</th>
+                                    <th>Registered On</th>
+                                    <th>Reviews Submitted</th>
+                                    <th>Feedback Submitted</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {% for user in users %}
                                 <tr>
+                                    <td class="text-muted">{{ user['id'] }}</td>
                                     <td><i class="bi bi-person-circle me-2 text-muted"></i>{{ user['username'] }}</td>
                                     <td>
                                         {% if user['role'] == 'admin' %}
@@ -115,6 +120,9 @@
                                         <span class="pill pill-neutral">User</span>
                                         {% endif %}
                                     </td>
+                                    <td>{{ user['created_at'] or 'Unknown' }}</td>
+                                    <td>{{ user['review_count'] }}</td>
+                                    <td>{{ user['feedback_count'] }}</td>
                                 </tr>
                                 {% endfor %}
                             </tbody>
